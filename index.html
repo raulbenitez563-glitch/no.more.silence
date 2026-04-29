@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EnglishLab — Aprende inglés y empieza a hablar</title>
 <meta name="description" content="EnglishLab: aprende inglés con las 4 habilidades — Reading, Listening, Writing y Speaking. Más barato que una sola clase. Con maestro real. $50 MXN/mes.">
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f0e0c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="EnglishLab">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
 <script>
 function smoothTo(id){var el=document.getElementById(id);if(el)el.scrollIntoView({behavior:'smooth'});}
@@ -961,6 +970,22 @@ function grantAccess(code){
     localStorage.setItem(SESSION_KEY, 'granted');
     localStorage.setItem('el_access_code', code.trim().toUpperCase());
     if(window.fbRegisterLogin) window.fbRegisterLogin(code.trim().toUpperCase());
+
+    // Monedas iniciales si es primera vez
+    setTimeout(function(){
+      if (window.fbGetMonedas && window.fbSumarMonedas) {
+        fbGetMonedas(function(m) {
+          var firstKey = 'el_monedas_init_' + c;
+          if (m === 0 && !localStorage.getItem(firstKey)) {
+            fbSumarMonedas(15, 'Monedas de bienvenida');
+            localStorage.setItem(firstKey, '1');
+          }
+        });
+      }
+      // Mostrar widget de monedas
+      iniciarWidgetMonedas();
+    }, 1000);
+
     // Show admin button if admin code
     if(c === 'EL-ADMIN-2025'){
       var ab = document.getElementById('admin-nav-btn');
@@ -1141,6 +1166,9 @@ function tryLogin(){
     <a onclick="smoothTo('pricing')" class="nav-cta">Empezar por $50 →</a>
     <button id="nav-access-btn" style="font-size:13px;padding:7px 14px;border-radius:8px;border:none;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:500;transition:all .2s;">Tengo un código →</button>
     <button id="admin-nav-btn" onclick="openAdmin()" style="display:none;font-size:12px;padding:6px 12px;border-radius:7px;border:1px solid rgba(124,58,237,.3);background:rgba(124,58,237,.15);color:#c4b5fd;cursor:pointer;font-family:'DM Sans',sans-serif;align-items:center;gap:5px;">📊 Admin</button>
+    <div id="nav-monedas" style="display:none;align-items:center;gap:5px;background:rgba(245,196,0,.12);border:1px solid rgba(245,196,0,.3);border-radius:20px;padding:5px 12px;cursor:pointer;font-size:13px;font-weight:700;color:#b8860b;" onclick="mostrarHistorialMonedas()" title="Tus monedas">
+      🪙 <span id="nav-monedas-num">0</span>
+    </div>
     <button id="dm-toggle" onclick="toggleDark()" title="Modo oscuro">🌙</button>
     <div class="streak-badge zero" id="nav-streak-badge" onclick="streakShowWidget()" title="Tu racha de estudio">
       <span class="sb-flame">🔥</span><span id="nav-streak-num">0</span> días
@@ -6314,7 +6342,7 @@ function toggleDark(){
 // FIREBASE — Realtime Database
 // ============================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDXseecjn5R35DLRe8PlBhrMG3R7cvUm88",
@@ -6372,6 +6400,81 @@ window.fbLoadAdmin = function(callback){
       callback(snap.exists() ? snap.val() : {});
     }).catch(function(){ callback({}); });
   }catch(e){ callback({}); }
+};
+
+// ══════════════════════════════════════════
+// SISTEMA DE MONEDAS 🪙
+// ══════════════════════════════════════════
+var MONEDAS_INICIO = 15; // monedas gratis al registrarse
+
+// Obtener monedas del alumno actual (tiempo real)
+window.fbGetMonedas = function(callback) {
+  try {
+    var code = getSessionCode();
+    if (code === 'ANONIMO') { callback(0); return; }
+    get(ref(db, 'alumnos/' + code + '/monedas')).then(function(snap) {
+      callback(snap.exists() ? (snap.val() || 0) : 0);
+    }).catch(function() { callback(0); });
+  } catch(e) { callback(0); }
+};
+
+// Escuchar cambios en tiempo real
+window.fbWatchMonedas = function(callback) {
+  try {
+    var code = getSessionCode();
+    if (code === 'ANONIMO') return;
+    onValue(ref(db, 'alumnos/' + code + '/monedas'), function(snap) {
+      callback(snap.exists() ? (snap.val() || 0) : 0);
+    });
+  } catch(e) {}
+};
+
+// Sumar monedas al alumno actual
+window.fbSumarMonedas = function(cantidad, motivo) {
+  try {
+    var code = getSessionCode();
+    if (code === 'ANONIMO') return;
+    get(ref(db, 'alumnos/' + code + '/monedas')).then(function(snap) {
+      var actual = snap.exists() ? (snap.val() || 0) : 0;
+      var nueva = actual + cantidad;
+      set(ref(db, 'alumnos/' + code + '/monedas'), nueva);
+      // Log de transacción
+      var logRef = ref(db, 'alumnos/' + code + '/historialMonedas/' + Date.now());
+      set(logRef, { cantidad: cantidad, motivo: motivo || '', total: nueva, fecha: new Date().toISOString() });
+    });
+  } catch(e) {}
+};
+
+// Restar monedas (para apostar)
+window.fbRestarMonedas = function(cantidad, motivo, callback) {
+  try {
+    var code = getSessionCode();
+    if (code === 'ANONIMO') { callback(false); return; }
+    get(ref(db, 'alumnos/' + code + '/monedas')).then(function(snap) {
+      var actual = snap.exists() ? (snap.val() || 0) : 0;
+      if (actual < cantidad) { callback(false); return; } // no tiene suficientes
+      var nueva = actual - cantidad;
+      set(ref(db, 'alumnos/' + code + '/monedas'), nueva);
+      var logRef = ref(db, 'alumnos/' + code + '/historialMonedas/' + Date.now());
+      set(logRef, { cantidad: -cantidad, motivo: motivo || '', total: nueva, fecha: new Date().toISOString() });
+      callback(true);
+    });
+  } catch(e) { callback(false); }
+};
+
+// Admin: asignar monedas a cualquier alumno
+window.fbAsignarMonedas = function(code, cantidad, callback) {
+  try {
+    var safe = code.replace(/[^a-zA-Z0-9_-]/g,'_').toUpperCase();
+    get(ref(db, 'alumnos/' + safe + '/monedas')).then(function(snap) {
+      var actual = snap.exists() ? (snap.val() || 0) : 0;
+      var nueva = actual + cantidad;
+      set(ref(db, 'alumnos/' + safe + '/monedas'), nueva);
+      var logRef = ref(db, 'alumnos/' + safe + '/historialMonedas/' + Date.now());
+      set(logRef, { cantidad: cantidad, motivo: 'Admin: asignacion manual', total: nueva, fecha: new Date().toISOString() });
+      if (callback) callback(true, nueva);
+    }).catch(function() { if (callback) callback(false, 0); });
+  } catch(e) { if (callback) callback(false, 0); }
 };
 
 // Register session on page load
@@ -6445,6 +6548,24 @@ document.addEventListener('DOMContentLoaded', function(){
       <div style="font-size:12px;color:#8a867f;">Tu codigo admin: <span style="color:#7c3aed;font-weight:600;">EL-ADMIN-2025</span></div>
     </div>
     <div style="text-align:center;margin-top:24px;font-size:12px;color:#8a867f;">Datos en tiempo real desde Firebase - Plan Spark (gratuito)</div>
+
+    <!-- GESTIÓN DE MONEDAS -->
+    <div style="background:rgba(245,196,0,.06);border:1px solid rgba(245,196,0,.2);border-radius:16px;padding:24px;margin-top:24px;">
+      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:18px;color:#F5C400;margin-bottom:6px;">🪙 Gestión de Monedas</div>
+      <div style="font-size:13px;color:rgba(240,237,230,.5);margin-bottom:20px;">Asigna monedas a un alumno cuando haga una compra por transferencia.</div>
+      <div style="display:flex;flex-direction:column;gap:12px;max-width:400px;">
+        <input id="admin-monedas-code" type="text" placeholder="Código del alumno (ej: EL-001)" style="padding:12px 16px;border-radius:10px;border:1px solid rgba(245,196,0,.3);background:rgba(245,196,0,.05);color:#f0ede6;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <button onclick="adminAsignarMonedas(20,'Paquete Chico $10 MXN')" style="padding:12px;border-radius:10px;border:1px solid rgba(245,196,0,.3);background:rgba(245,196,0,.1);color:#F5C400;font-weight:700;cursor:pointer;font-size:13px;">+20 🪙 · $10 MXN</button>
+          <button onclick="adminAsignarMonedas(60,'Paquete Grande $25 MXN')" style="padding:12px;border-radius:10px;border:none;background:#F5C400;color:#111;font-weight:700;cursor:pointer;font-size:13px;">+60 🪙 · $25 MXN</button>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <input id="admin-monedas-custom" type="number" placeholder="Cantidad personalizada" min="1" style="flex:1;padding:12px 16px;border-radius:10px;border:1px solid rgba(245,196,0,.2);background:rgba(245,196,0,.04);color:#f0ede6;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;">
+          <button onclick="adminAsignarMonedas(parseInt(document.getElementById('admin-monedas-custom').value)||0,'Asignacion manual')" style="padding:12px 16px;border-radius:10px;border:1px solid rgba(245,196,0,.2);background:rgba(245,196,0,.06);color:#F5C400;font-weight:600;cursor:pointer;font-size:13px;">Asignar</button>
+        </div>
+        <div id="admin-monedas-msg" style="font-size:13px;text-align:center;min-height:20px;"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -6474,7 +6595,10 @@ document.addEventListener('DOMContentLoaded', function(){
       <span style="font-family:'Syne',sans-serif;font-weight:800;font-size:16px;color:#fff;">🏆 EnglishLab</span>
       <span id="tr-level-badge" style="background:#1D9E75;color:#fff;border-radius:50px;padding:3px 12px;font-size:11px;font-weight:700;">Torneo</span>
     </div>
-    <button onclick="closeTorneo()" style="background:rgba(255,255,255,.08);color:#fff;border:none;border-radius:50px;padding:7px 16px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;">← Volver</button>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button onclick="trOpenLeaderboard()" style="background:rgba(245,196,0,.15);color:#F5C400;border:1px solid rgba(245,196,0,.3);border-radius:50px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600;">🏅 Ranking</button>
+      <button onclick="closeTorneo()" style="background:rgba(255,255,255,.08);color:#fff;border:none;border-radius:50px;padding:7px 16px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;">← Volver</button>
+    </div>
   </nav>
 
   <!-- BRACKET VIEW -->
@@ -6728,8 +6852,48 @@ document.addEventListener('DOMContentLoaded', function(){
     <div id="tr-champion-name" style="font-family:'Syne',sans-serif;font-weight:700;font-size:22px;color:#fff;margin-bottom:6px;"></div>
     <div id="tr-champion-badge" style="font-size:14px;font-weight:700;margin-bottom:28px;"></div>
     <button onclick="trStartTorneo()" style="background:#F5C400;color:#111;border:none;border-radius:50px;padding:14px 36px;font-family:'Syne',sans-serif;font-weight:800;font-size:16px;cursor:pointer;margin-right:10px;">🔄 Nuevo torneo</button>
+    <button onclick="trOpenLeaderboard()" style="background:rgba(245,196,0,.15);color:#F5C400;border:1px solid rgba(245,196,0,.3);border-radius:50px;padding:14px 24px;font-family:'DM Sans',sans-serif;font-weight:600;font-size:14px;cursor:pointer;margin-right:10px;">🏅 Ver ranking</button>
     <button onclick="closeTorneo()" style="background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:50px;padding:14px 24px;font-family:'DM Sans',sans-serif;font-weight:600;font-size:14px;cursor:pointer;">Salir</button>
   </div>
+
+  <!-- LEADERBOARD VIEW -->
+  <div id="tr-leaderboard-view" style="display:none;max-width:640px;margin:0 auto;padding:24px 16px 60px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <div>
+        <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:22px;color:#F5C400;">Ranking Global 🏆</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.4);margin-top:2px;">Puntos acumulados en todos los torneos</div>
+      </div>
+      <button onclick="trCloseLeaderboard()" style="background:rgba(255,255,255,.08);color:#fff;border:none;border-radius:50px;padding:7px 16px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;">← Volver</button>
+    </div>
+
+    <!-- Podio -->
+    <div id="el-podium" style="display:none;grid-template-columns:1fr 1.1fr 1fr;gap:10px;margin-bottom:16px;align-items:end;"></div>
+
+    <!-- Estado / loading -->
+    <div id="el-estado" style="text-align:center;padding:40px;color:rgba(255,255,255,.4);font-size:14px;">Cargando tabla...</div>
+
+    <!-- Tabla -->
+    <div id="el-tabla" style="display:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:14px;overflow:hidden;margin-bottom:16px;"></div>
+
+    <!-- Info puntos -->
+    <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="font-size:11px;font-weight:600;color:rgba(255,255,255,.35);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">¿Cómo se ganan puntos?</div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px;color:rgba(255,255,255,.7);">
+        <span>🏆 Ganar el torneo (campeón)</span><span style="font-weight:700;color:#1D9E75;">+10 pts</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px;color:rgba(255,255,255,.7);">
+        <span>⚽ Por cada gol anotado</span><span style="font-weight:700;color:#1D9E75;">+1 pt</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px;color:rgba(255,255,255,.7);">
+        <span>🥈 Llegar a semifinal</span><span style="font-weight:700;color:#1D9E75;">+5 pts</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px;color:rgba(255,255,255,.7);">
+        <span>🥉 Llegar a cuartos</span><span style="font-weight:700;color:#1D9E75;">+3 pts</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;color:rgba(255,255,255,.7);">
+        <span>✅ Participar</span><span style="font-weight:700;color:#1D9E75;">+2 pts</span></div>
+    </div>
+
+    <div id="el-updated" style="font-size:12px;color:rgba(255,255,255,.3);text-align:center;margin-bottom:10px;"></div>
+    <button onclick="elCargarLeaderboard()" style="display:block;margin:0 auto;padding:9px 20px;border:1px solid rgba(255,255,255,.12);border-radius:30px;background:rgba(255,255,255,.05);font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer;color:rgba(255,255,255,.6);">↻ Actualizar</button>
+  </div>
+
 </div>
 
 <style>
@@ -6760,6 +6924,24 @@ function openAdmin(){
   document.body.style.overflow='hidden';
   loadAdminData();
 }
+function adminAsignarMonedas(cantidad, motivo) {
+  var code = document.getElementById('admin-monedas-code').value.trim();
+  var msg = document.getElementById('admin-monedas-msg');
+  if (!code) { msg.style.color='#e74c3c'; msg.textContent='Ingresa el código del alumno.'; return; }
+  if (!cantidad || cantidad < 1) { msg.style.color='#e74c3c'; msg.textContent='Ingresa una cantidad válida.'; return; }
+  if (!window.fbAsignarMonedas) { msg.style.color='#e74c3c'; msg.textContent='Firebase no disponible.'; return; }
+  msg.style.color='#F5C400'; msg.textContent='Asignando...';
+  fbAsignarMonedas(code, cantidad, function(ok, total) {
+    if (ok) {
+      msg.style.color='#1D9E75';
+      msg.textContent='✓ +' + cantidad + ' 🪙 asignadas a ' + code.toUpperCase() + ' · Total: ' + total + ' 🪙';
+    } else {
+      msg.style.color='#e74c3c';
+      msg.textContent='Error: no se encontró el alumno o Firebase falló.';
+    }
+  });
+}
+
 function closeAdmin(){
   document.getElementById('admin-panel').style.display='none';
   document.body.style.overflow='';
@@ -7976,6 +8158,32 @@ function openLevelTorneo(lv) {
   _trLevel = lv;
   var done = window.DONE && DONE[lv] ? DONE[lv].filter(Boolean).length : 0;
   if (done < 4) { alert('Completa al menos 4 unidades de '+lv.toUpperCase()+' primero.'); return; }
+
+  // Verificar monedas antes de entrar
+  var APUESTA = 5;
+  if (window.fbRestarMonedas) {
+    fbGetMonedas(function(monedas) {
+      if (monedas < APUESTA) {
+        mostrarModalSinMonedas(monedas, APUESTA);
+        return;
+      }
+      // Mostrar modal de confirmación de apuesta
+      mostrarModalApuesta(lv, APUESTA, function() {
+        fbRestarMonedas(APUESTA, 'Entrada al torneo ' + lv.toUpperCase(), function(ok) {
+          if (!ok) { mostrarModalSinMonedas(0, APUESTA); return; }
+          _trApuesta = APUESTA;
+          iniciarTorneoReal(lv);
+        });
+      });
+    });
+  } else {
+    iniciarTorneoReal(lv);
+  }
+}
+
+var _trApuesta = 0;
+
+function iniciarTorneoReal(lv) {
   document.body.classList.add('torneo-active');
   ['proof-strip','streak-broken-bar','sbb'].forEach(function(id){
     var el=document.getElementById(id); if(el) el.style.display='none';
@@ -7986,6 +8194,50 @@ function openLevelTorneo(lv) {
   badge.textContent=TR_EMOJIS[lv]+' Torneo '+lv.toUpperCase();
   badge.style.background=TR_COLORS[lv];
   trInit();
+}
+
+function mostrarModalApuesta(lv, apuesta, onConfirm) {
+  var modal = document.createElement('div');
+  modal.id = 'modal-apuesta';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = '<div style="background:#1a1a2e;border:2px solid #F5C400;border-radius:20px;padding:32px;max-width:340px;width:100%;text-align:center;font-family:DM Sans,sans-serif;">'
+    + '<div style="font-size:40px;margin-bottom:12px;">⚽🪙</div>'
+    + '<div style="font-family:Syne,sans-serif;font-weight:800;font-size:20px;color:#F5C400;margin-bottom:8px;">Torneo ' + lv.toUpperCase() + '</div>'
+    + '<div style="font-size:14px;color:rgba(255,255,255,.7);margin-bottom:20px;line-height:1.6;">Para entrar al torneo apuestas <strong style="color:#F5C400;">' + apuesta + ' 🪙</strong><br>Si ganas, recuperas tus monedas y ganas más.</div>'
+    + '<div style="background:rgba(245,196,0,.1);border:1px solid rgba(245,196,0,.2);border-radius:12px;padding:12px;margin-bottom:20px;font-size:13px;color:rgba(255,255,255,.6);">'
+    + '🏆 Campeón → <strong style="color:#F5C400;">+20 🪙</strong><br>'
+    + '⚽ Por gol → <strong style="color:#F5C400;">+1 🪙</strong><br>'
+    + '🥈 Semifinal → <strong style="color:#F5C400;">+8 🪙</strong><br>'
+    + '🥉 Cuartos → <strong style="color:#F5C400;">+5 🪙</strong><br>'
+    + '😔 Eliminado → <strong style="color:#F5C400;">+2 🪙</strong>'
+    + '</div>'
+    + '<div style="display:flex;gap:10px;">'
+    + '<button onclick="document.getElementById(\'modal-apuesta\').remove()" style="flex:1;padding:12px;border-radius:50px;border:1px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.6);cursor:pointer;font-size:13px;">Cancelar</button>'
+    + '<button id="btn-confirmar-apuesta" style="flex:1;padding:12px;border-radius:50px;border:none;background:#F5C400;color:#111;font-weight:800;cursor:pointer;font-size:14px;">¡Entrar! -' + apuesta + '🪙</button>'
+    + '</div></div>';
+  document.body.appendChild(modal);
+  document.getElementById('btn-confirmar-apuesta').onclick = function() {
+    modal.remove();
+    onConfirm();
+  };
+}
+
+function mostrarModalSinMonedas(monedas, necesitas) {
+  var modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = '<div style="background:#1a1a2e;border:2px solid #e74c3c;border-radius:20px;padding:32px;max-width:340px;width:100%;text-align:center;font-family:DM Sans,sans-serif;">'
+    + '<div style="font-size:40px;margin-bottom:12px;">😔🪙</div>'
+    + '<div style="font-family:Syne,sans-serif;font-weight:800;font-size:20px;color:#e74c3c;margin-bottom:8px;">Sin monedas</div>'
+    + '<div style="font-size:14px;color:rgba(255,255,255,.7);margin-bottom:8px;">Tienes <strong style="color:#F5C400;">' + monedas + ' 🪙</strong> y necesitas <strong style="color:#F5C400;">' + necesitas + ' 🪙</strong> para entrar.</div>'
+    + '<div style="font-size:13px;color:rgba(255,255,255,.5);margin-bottom:20px;">Compra más monedas por WhatsApp:</div>'
+    + '<div style="background:rgba(255,255,255,.05);border-radius:12px;padding:12px;margin-bottom:20px;font-size:13px;">'
+    + '<div style="color:rgba(255,255,255,.7);margin-bottom:6px;">📦 Paquete Chico — <strong style="color:#F5C400;">20 🪙</strong> por $10 MXN</div>'
+    + '<div style="color:rgba(255,255,255,.7);">📦 Paquete Grande — <strong style="color:#F5C400;">60 🪙</strong> por $25 MXN</div>'
+    + '</div>'
+    + '<a href="https://wa.me/525581074978?text=Hola%2C%20quiero%20comprar%20monedas%20para%20el%20torneo" target="_blank" style="display:block;padding:12px;border-radius:50px;background:#25D366;color:#fff;font-weight:700;text-decoration:none;font-size:14px;margin-bottom:10px;">💬 Comprar por WhatsApp</a>'
+    + '<button onclick="this.parentNode.parentNode.remove()" style="width:100%;padding:10px;border-radius:50px;border:1px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);cursor:pointer;font-size:13px;">Cerrar</button>'
+    + '</div>';
+  document.body.appendChild(modal);
 }
 
 function trInit() {
@@ -8115,16 +8367,52 @@ function trPlay() {
   updateTurnUI();
 }
 
+// ── EnglishLab Leaderboard Integration ──
+var EL_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwC3Id0aaBmMRzM6tv4ydumOxTPDIbi-JZs7S4BzO56_4PBvJb8h-iOAd8003z4MAwJ/exec';
+// Ejemplo: 'https://script.google.com/macros/s/AKfyc.../exec'
+
+function elGetCode() {
+  return localStorage.getItem('el_access_code') || 'ANONIMO';
+}
+
+function elRegistrarResultado(resultado, nivel, golesJugador, golesRival) {
+  if (!EL_SCRIPT_URL) return;
+  var payload = {
+    action:       'register',
+    code:         elGetCode(),
+    nivel:        nivel || '—',
+    resultado:    resultado,
+    golesJugador: golesJugador || 0,
+    golesRival:   golesRival   || 0
+  };
+  fetch(EL_SCRIPT_URL, {
+    method:  'POST',
+    mode:    'no-cors',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(payload)
+  }).catch(function(err) {
+    console.warn('EnglishLab: No se pudo registrar el resultado.', err);
+  });
+}
+// ── Fin integración ──
+
 function trFinish(won) {
   var a=_trMatch.teamA, b=_trMatch.teamB;
   _trDone[_trRound][0]={winner:won?a:b, scoreA:playerGoals, scoreB:rivalGoals, cpu:false};
 
   if(!won){
+    elRegistrarResultado('eliminado', _trPlayerUnit.lv, playerGoals, rivalGoals);
+
+    // Monedas por participar + goles
+    var mParticipa = 2 + (playerGoals || 0);
+    if (window.fbSumarMonedas) fbSumarMonedas(mParticipa, 'Torneo: eliminado + ' + playerGoals + ' goles');
+
     trShowBracket();
     setTimeout(function(){
       var msg=document.createElement('div');
       msg.style.cssText='background:rgba(231,76,60,.15);border:1px solid rgba(231,76,60,.3);border-radius:14px;padding:16px;text-align:center;margin:16px 0;';
-      msg.innerHTML='<span style="color:#e74c3c;font-weight:700;">\😔 Eliminado en '+TR_NAMES[_trRound]+'</span><br>'
+      msg.innerHTML='<span style="color:#e74c3c;font-weight:700;">\😔 Eliminado en '+TR_NAMES[_trRound]+'</span>'
+        +'<div style="color:#F5C400;font-size:13px;margin-top:6px;">+'+mParticipa+' 🪙 ganadas</div>'
         +'<button onclick="trInit()" style="margin-top:10px;background:#F5C400;color:#111;border:none;border-radius:50px;padding:8px 20px;font-weight:700;cursor:pointer;">\🔄 Nuevo torneo</button>';
       var grid=document.getElementById('tr-matches-grid');
       if(grid) grid.parentNode.insertBefore(msg,grid);
@@ -8135,26 +8423,50 @@ function trFinish(won) {
   _trRound++;
   if(_trRound>3){ trChampion(a); return; }
 
-  // Build next round
+  // Monedas por ganar partido + goles
+  var mRonda = [5, 8][_trRound-2] || 5;
+  var mGoles = playerGoals || 0;
+  var mTotal = mRonda + mGoles;
+  var avance=['cuartos','semifinal','final'][_trRound-1]||'avance';
+  elRegistrarResultado(avance, _trPlayerUnit.lv, playerGoals, rivalGoals);
+  if (window.fbSumarMonedas) fbSumarMonedas(mTotal, 'Torneo: avance a ' + avance + ' + ' + mGoles + ' goles');
+
   var prev=_trRounds[_trRound-1];
   var w=prev.map(function(_,i){return _trDone[_trRound-1][i].winner;});
   _trWinners=w;
-  _trWinners[0]=_trPlayerUnit; // player's ORIGINAL unit always slot 0
+  _trWinners[0]=_trPlayerUnit;
 
   var next=[];
   for(var i=0;i<w.length;i+=2) next.push({a:i,b:i+1});
   _trRounds[_trRound]=next;
 
-  trSimCPU(); // shows bracket automatically
+  trSimCPU();
 }
 
 function trChampion(w){
+  elRegistrarResultado('campeon', _trPlayerUnit.lv, playerGoals, rivalGoals);
+
+  // Monedas por ser campeón + goles
+  var mCampeon = 20 + (playerGoals || 0);
+  if (window.fbSumarMonedas) fbSumarMonedas(mCampeon, 'Torneo: CAMPEON + ' + playerGoals + ' goles');
+
   document.getElementById('tr-bracket-view').style.display='none';
   document.getElementById('tr-match-view').style.display='none';
   document.getElementById('tr-champion-view').style.display='block';
   document.getElementById('tr-champion-name').textContent=w.name;
   document.getElementById('tr-champion-badge').textContent=TR_EMOJIS[w.lv]+' '+w.lv.toUpperCase()+' \u00b7 CAMPE\u00d3N';
   document.getElementById('tr-champion-badge').style.color=TR_COLORS[w.lv];
+
+  // Mostrar monedas ganadas en pantalla de campeón
+  setTimeout(function(){
+    var champ = document.getElementById('tr-champion-view');
+    if(champ){
+      var div = document.createElement('div');
+      div.style.cssText='margin-top:16px;background:rgba(245,196,0,.15);border:1px solid rgba(245,196,0,.3);border-radius:12px;padding:14px;font-size:15px;font-weight:700;color:#F5C400;';
+      div.textContent='+'+mCampeon+' 🪙 ganadas — ¡Eres el campeón!';
+      champ.insertBefore(div, champ.querySelector('button'));
+    }
+  }, 300);
 }
 
 function closeTorneo(){
@@ -8172,4 +8484,222 @@ window.closeTorneo=closeTorneo;
 window.trStartTorneo=trInit;
 window.trSaveMatchResult=trFinish;
 </script>
-</html>
+</html><script>
+// ── LEADERBOARD EMBEBIDO ──
+var _elPrevView = null;
+
+function trOpenLeaderboard() {
+  var views = ['tr-bracket-view','tr-match-view','tr-champion-view'];
+  _elPrevView = null;
+  views.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el && el.style.display !== 'none') { _elPrevView = id; el.style.display = 'none'; }
+  });
+  document.getElementById('tr-leaderboard-view').style.display = 'block';
+  elCargarLeaderboard();
+}
+
+function trCloseLeaderboard() {
+  document.getElementById('tr-leaderboard-view').style.display = 'none';
+  if (_elPrevView) {
+    document.getElementById(_elPrevView).style.display = 'block';
+  } else {
+    document.getElementById('tr-bracket-view').style.display = 'block';
+  }
+}
+
+function elCargarLeaderboard() {
+  if (!EL_SCRIPT_URL) {
+    document.getElementById('el-estado').textContent = 'Configura EL_SCRIPT_URL para ver el ranking.';
+    document.getElementById('el-estado').style.display = 'block';
+    return;
+  }
+  document.getElementById('el-estado').textContent = 'Cargando tabla...';
+  document.getElementById('el-estado').style.display = 'block';
+  document.getElementById('el-tabla').style.display = 'none';
+  document.getElementById('el-podium').style.display = 'none';
+
+  fetch(EL_SCRIPT_URL + '?t=' + Date.now())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error || 'Error');
+      elRenderLeaderboard(data.leaderboard);
+    })
+    .catch(function(err) {
+      document.getElementById('el-estado').innerHTML =
+        '<div style="color:#e74c3c;font-size:13px;">No se pudo cargar la tabla.<br><small>' + err.message + '</small></div>';
+    });
+}
+
+function elRenderLeaderboard(list) {
+  document.getElementById('el-estado').style.display = 'none';
+  if (!list || list.length === 0) {
+    document.getElementById('el-estado').textContent = 'Aún no hay resultados registrados.';
+    document.getElementById('el-estado').style.display = 'block';
+    return;
+  }
+
+  var MEDALS = ['🥇','🥈','🥉'];
+  var COLORS = [
+    {bg:'rgba(29,158,117,.2)',txt:'#5DCAA5'},
+    {bg:'rgba(26,79,212,.2)',txt:'#7ba7f7'},
+    {bg:'rgba(192,112,0,.2)',txt:'#f0b429'},
+    {bg:'rgba(124,58,237,.2)',txt:'#c4b5fd'},
+    {bg:'rgba(231,76,60,.2)',txt:'#f87171'},
+  ];
+  function initials(s) {
+    var p = s.trim().split(/[\s\-_]+/);
+    return p.length >= 2 ? (p[0][0]+(p[1][0]||'')).toUpperCase() : s.substring(0,2).toUpperCase();
+  }
+  function colorFor(i) { return COLORS[i % COLORS.length]; }
+
+  // Podio top 3
+  if (list.length >= 2) {
+    var podOrder = list.length >= 3 ? [list[1],list[0],list[2]] : [list[0],list[1]];
+    var podMedals = list.length >= 3 ? ['🥈','🥇','🥉'] : ['🥇','🥈'];
+    var podIdx    = list.length >= 3 ? [1,0,2] : [0,1];
+    var ph = '';
+    podOrder.forEach(function(p, pi) {
+      var ri = podIdx[pi];
+      var c = colorFor(ri);
+      var isFirst = p === list[0];
+      ph += '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1)'+(isFirst?';border-color:#F5C400':'')+';border-radius:14px;padding:14px 10px;text-align:center;">';
+      ph += '<div style="font-size:20px;margin-bottom:6px;">'+podMedals[pi]+'</div>';
+      ph += '<div style="width:38px;height:38px;border-radius:50%;background:'+c.bg+';color:'+c.txt+';display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;margin:0 auto 8px;">'+initials(p.nombre)+'</div>';
+      ph += '<div style="font-size:12px;font-weight:700;color:#fff;margin-bottom:2px;">'+p.nombre+'</div>';
+      ph += '<div style="font-size:11px;color:rgba(255,255,255,.4);">'+p.puntos+' pts</div>';
+      ph += '<div style="font-size:10px;margin-top:5px;padding:2px 8px;border-radius:20px;display:inline-block;background:'+c.bg+';color:'+c.txt+';">'+p.nivel+'</div>';
+      ph += '</div>';
+    });
+    var pod = document.getElementById('el-podium');
+    pod.innerHTML = ph;
+    pod.style.display = 'grid';
+  }
+
+  // Tabla completa
+  var myCode = elGetCode();
+  var th = '<div style="display:grid;grid-template-columns:36px 1fr 55px 55px 55px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);">'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.3);font-weight:700;text-transform:uppercase;">#</div>'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.3);font-weight:700;text-transform:uppercase;">Alumno</div>'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.3);font-weight:700;text-transform:uppercase;text-align:right;">Jugs</div>'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.3);font-weight:700;text-transform:uppercase;text-align:right;">Gans</div>'
+    +'<div style="font-size:10px;color:rgba(255,255,255,.3);font-weight:700;text-transform:uppercase;text-align:right;">Pts</div>'
+    +'</div>';
+
+  list.forEach(function(p, i) {
+    var c = colorFor(i);
+    var rank = i < 3 ? MEDALS[i] : (i+1);
+    var isMe = p.code === myCode;
+    th += '<div style="display:grid;grid-template-columns:36px 1fr 55px 55px 55px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.05);align-items:center;'+(isMe?'background:rgba(245,196,0,.07);':'')+'">';
+    th += '<div style="font-size:13px;font-weight:600;color:rgba(255,255,255,.4);">'+rank+'</div>';
+    th += '<div style="display:flex;align-items:center;gap:8px;">';
+    th += '<div style="width:30px;height:30px;border-radius:50%;background:'+c.bg+';color:'+c.txt+';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">'+initials(p.nombre)+'</div>';
+    th += '<div><div style="font-size:13px;font-weight:600;color:#fff;">'+p.nombre+(isMe?' <span style="font-size:10px;color:#F5C400;font-weight:700;">tú</span>':'')+'</div>';
+    th += '<div style="font-size:11px;color:rgba(255,255,255,.35);">'+p.nivel+'</div></div></div>';
+    th += '<div style="font-size:13px;text-align:right;color:rgba(255,255,255,.45);">'+p.jugados+'</div>';
+    th += '<div style="font-size:13px;text-align:right;color:rgba(255,255,255,.45);">'+p.ganados+'</div>';
+    th += '<div style="font-size:14px;font-weight:700;text-align:right;color:#F5C400;">'+p.puntos+'</div>';
+    th += '</div>';
+  });
+
+  document.getElementById('el-tabla').innerHTML = th;
+  document.getElementById('el-tabla').style.display = 'block';
+
+  var now = new Date();
+  document.getElementById('el-updated').textContent =
+    'Actualizado: ' + now.toLocaleDateString('es-MX') + ' ' + now.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+}
+</script>
+<script>
+// ══════════════════════════════════════════
+// WIDGET DE MONEDAS — visible en nav
+// ══════════════════════════════════════════
+function iniciarWidgetMonedas() {
+  var nav = document.getElementById('nav-monedas');
+  if (!nav) return;
+  nav.style.display = 'flex';
+  if (window.fbWatchMonedas) {
+    fbWatchMonedas(function(m) {
+      var el = document.getElementById('nav-monedas-num');
+      if (el) el.textContent = m;
+    });
+  }
+}
+
+// Mostrar historial de monedas del alumno
+function mostrarHistorialMonedas() {
+  if (!window.fbGetMonedas) return;
+  var code = (localStorage.getItem('el_access_code') || '').replace(/[^a-zA-Z0-9_-]/g,'_').toUpperCase();
+  if (!code) return;
+
+  var modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = '<div style="background:#1a1a2e;border:2px solid rgba(245,196,0,.3);border-radius:20px;padding:28px;max-width:360px;width:100%;font-family:DM Sans,sans-serif;max-height:80vh;overflow-y:auto;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">'
+    + '<div style="font-family:Syne,sans-serif;font-weight:800;font-size:18px;color:#F5C400;">🪙 Mis Monedas</div>'
+    + '<button onclick="this.parentNode.parentNode.parentNode.remove()" style="background:rgba(255,255,255,.08);border:none;color:#fff;padding:6px 12px;border-radius:20px;cursor:pointer;">✕</button>'
+    + '</div>'
+    + '<div id="historial-monedas-content" style="color:rgba(255,255,255,.7);font-size:14px;text-align:center;padding:20px;">Cargando...</div>'
+    + '<div style="margin-top:16px;background:rgba(255,255,255,.04);border-radius:12px;padding:12px;font-size:13px;color:rgba(255,255,255,.5);">'
+    + '📦 Paquete Chico — <strong style="color:#F5C400;">20 🪙</strong> · $10 MXN<br>'
+    + '📦 Paquete Grande — <strong style="color:#F5C400;">60 🪙</strong> · $25 MXN'
+    + '</div>'
+    + '<a href="https://wa.me/525581074978?text=Hola%2C%20quiero%20comprar%20monedas" target="_blank" style="display:block;margin-top:12px;padding:11px;border-radius:50px;background:#25D366;color:#fff;font-weight:700;text-decoration:none;font-size:13px;text-align:center;">💬 Comprar monedas por WhatsApp</a>'
+    + '</div>';
+  document.body.appendChild(modal);
+
+  // Cargar datos
+  import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js').then(function(m) {
+    var db = window._elFbDb;
+    if (!db) { document.getElementById('historial-monedas-content').textContent = 'No disponible.'; return; }
+    m.get(m.ref(db, 'alumnos/' + code)).then(function(snap) {
+      var data = snap.exists() ? snap.val() : {};
+      var monedas = data.monedas || 0;
+      var historial = data.historialMonedas ? Object.values(data.historialMonedas) : [];
+      historial.sort(function(a,b){ return b.fecha > a.fecha ? 1 : -1; });
+
+      var html = '<div style="font-size:36px;font-weight:800;color:#F5C400;margin-bottom:4px;">' + monedas + ' 🪙</div>'
+        + '<div style="font-size:12px;color:rgba(255,255,255,.4);margin-bottom:16px;">saldo actual</div>';
+
+      if (historial.length) {
+        html += '<div style="text-align:left;">';
+        historial.slice(0,10).forEach(function(h) {
+          var pos = h.cantidad > 0;
+          var fecha = h.fecha ? new Date(h.fecha).toLocaleDateString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+          html += '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;">'
+            + '<span style="color:rgba(255,255,255,.6);">' + (h.motivo || 'Movimiento') + '</span>'
+            + '<span style="font-weight:700;color:' + (pos?'#1D9E75':'#e74c3c') + ';">' + (pos?'+':'') + h.cantidad + ' 🪙</span>'
+            + '</div>';
+        });
+        html += '</div>';
+      } else {
+        html += '<div style="color:rgba(255,255,255,.4);font-size:13px;">Sin movimientos aún</div>';
+      }
+
+      document.getElementById('historial-monedas-content').innerHTML = html;
+    });
+  }).catch(function() {
+    fbGetMonedas(function(m) {
+      document.getElementById('historial-monedas-content').innerHTML = '<div style="font-size:36px;font-weight:800;color:#F5C400;">' + m + ' 🪙</div><div style="font-size:12px;color:rgba(255,255,255,.4);">saldo actual</div>';
+    });
+  });
+}
+
+// Si ya tiene sesión al cargar, mostrar widget
+document.addEventListener('DOMContentLoaded', function() {
+  if (localStorage.getItem('el_access') === 'granted') {
+    setTimeout(iniciarWidgetMonedas, 1500);
+  }
+});
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js').then(function(reg) {
+      console.log('EnglishLab SW registrado:', reg.scope);
+    }).catch(function(err) {
+      console.log('SW error:', err);
+    });
+  });
+}
+</script>
